@@ -4,6 +4,11 @@ import random
 import asyncio
 import aiohttp
 
+import time
+import math
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram import F
+
 from dotenv import load_dotenv
 from openpyxl import load_workbook
 from aiohttp import web
@@ -30,6 +35,15 @@ MYMEMORY_EMAIL = os.getenv("MYMEMORY_EMAIL")
 BASE_DIR = Path(__file__).resolve().parent
 
 
+PAGE_SIZE = 20
+
+# --- translate cache (очень простой) ---
+TR_CACHE: dict[tuple[str, str], str] = {}   # key=(src_lang, text)
+
+# --- simple rate limit for /tr ---
+TR_LAST_TS: dict[int, float] = {}           # key=user_id -> last_ts
+TR_MIN_INTERVAL = 2.0  # seconds
+
 # ==== НАСТРОЙКИ ФАЙЛА ====
 FILE_PATH = str(BASE_DIR / "vocab.xlsx")
 
@@ -39,6 +53,8 @@ SHEET_NAME = "THINK L2 DUTCH"   # если будет ошибка листа �
 router = Router()
 VOCAB: list[dict] = []
 VOCAB_BY_ID: dict[int, dict] = {}
+
+
 
 
 async def start_health_server():
@@ -54,6 +70,15 @@ async def start_health_server():
     port = int(os.getenv("PORT", "8000"))
     site = web.TCPSite(runner, "0.0.0.0", port)  # важно 0.0.0.0 :contentReference[oaicite:4]{index=4}
     await site.start()
+
+
+def tr_rate_limited(user_id: int) -> bool:
+    now = time.time()
+    last = TR_LAST_TS.get(user_id, 0.0)
+    if now - last < TR_MIN_INTERVAL:
+        return True
+    TR_LAST_TS[user_id] = now
+    return False
 
 
 # ===================== Excel =====================
@@ -175,6 +200,11 @@ async def translate_to_armenian(text: str) -> str:
     if src == "hy":
         return text
 
+    cache_key = (src, text)
+    if cache_key in TR_CACHE:
+        return TR_CACHE[cache_key]
+
+
     url = "https://api.mymemory.translated.net/get"
     params = {"q": text, "langpair": f"{src}|hy"}
     if MYMEMORY_EMAIL:
@@ -187,7 +217,8 @@ async def translate_to_armenian(text: str) -> str:
 
     translated = ((data.get("responseData") or {}).get("translatedText")) or ""
     translated = translated.strip()
-    return translated or "Не получилось перевести 😕"
+    TR_CACHE[cache_key] = translated or "Не получилось перевести 😕"
+    return TR_CACHE[cache_key]
 
 
 # ===================== FSM =====================
@@ -242,6 +273,41 @@ def build_quiz_answers_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Stop test", callback_data="quiz:stop")],
         ]
     )
+
+def build_unit_page_kb(unit_no: int, page: int, max_page: int) -> InlineKeyboardMarkup:
+    buttons = []
+    if page > 1:
+        buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"unitpage:{unit_no}:{page-1}"))
+    if page < max_page:
+        buttons.append(InlineKeyboardButton(text="➡️ Дальше", callback_data=f"unitpage:{unit_no}:{page+1}"))
+
+    rows = []
+    if buttons:
+        rows.append(buttons)
+    rows.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="unitpage:close")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+async def send_unit_page(m: Message, unit_no: int, page: int):
+    items = [it for it in VOCAB if it.get("UNIT NO") == unit_no]
+    if not items:
+        await m.answer(f"Unit {unit_no} не найден или пустой.")
+        return
+
+    total = len(items)
+    max_page = max(1, math.ceil(total / PAGE_SIZE))
+    page = max(1, min(page, max_page))
+
+    start = (page - 1) * PAGE_SIZE
+    end = start + PAGE_SIZE
+    chunk = items[start:end]
+
+    text = f"📘 Unit {unit_no} — страница {page}/{max_page} (слова {start+1}-{min(end, total)} из {total})\n\n"
+    text += format_items(chunk)
+
+    await send_long(m, text)
+    await m.answer("Навигация:", reply_markup=build_unit_page_kb(unit_no, page, max_page))
+
 
 
 # ===================== Bot commands =====================
@@ -306,26 +372,40 @@ async def range_cmd(m: Message):
 
     await send_long(m, f"Слова {a}–{b}:\n\n" + format_items(items))
 
-
 @router.message(Command("unit"))
 async def unit_cmd(m: Message):
     parts = (m.text or "").split()
+
     if len(parts) < 2:
-        await m.answer("Пример: /unit 4")
+        await m.answer("Пример: /unit 4  или  /unit 4 2 (страница 2)")
         return
 
     try:
-        u = int(parts[1])
+        unit_no = int(parts[1])
     except ValueError:
         await m.answer("Unit должен быть числом. Пример: /unit 4")
         return
 
-    items = [it for it in VOCAB if it.get("UNIT NO") == u]
-    if not items:
-        await m.answer(f"Unit {u} не найден или пустой.")
+    page = 1
+    if len(parts) >= 3 and parts[2].isdigit():
+        page = int(parts[2])
+
+    await send_unit_page(m, unit_no, page)
+
+@router.callback_query(F.data.startswith("unitpage:"))
+async def unitpage_cb(cb: CallbackQuery):
+    if cb.data == "unitpage:close":
+        await cb.message.delete()
+        await cb.answer()
         return
 
-    await send_long(m, f"Unit {u} (всего {len(items)} слов):\n\n" + format_items(items))
+    _, unit_s, page_s = cb.data.split(":")
+    unit_no = int(unit_s)
+    page = int(page_s)
+
+    await cb.answer()
+    await cb.message.answer(f"⏭ Открываю Unit {unit_no}, страница {page}…")
+    await send_unit_page(cb.message, unit_no, page)
 
 
 @router.message(Command("find"))
@@ -372,6 +452,10 @@ async def tr_button(m: Message, state: FSMContext):
 
 @router.message(Command("tr"))
 async def tr_cmd(m: Message):
+    if tr_rate_limited(m.from_user.id):
+        await m.answer("⏳ Слишком часто. Подожди 2 секунды 🙂")
+        return
+    
     text = (m.text or "").split(maxsplit=1)
     if len(text) < 2 or not text[1].strip():
         await m.answer("Пример: /tr Hello world")
@@ -386,6 +470,9 @@ async def tr_cmd(m: Message):
 
 @router.message(TranslateState.waiting_text)
 async def tr_state_handler(m: Message, state: FSMContext):
+    if tr_rate_limited(m.from_user.id):
+        await m.answer("⏳ Слишком часто. Подожди 2 секунды 🙂")
+        return
     if (m.text or "").startswith("/"):
         await m.answer("Если хочешь выйти — нажми ❌ Отмена. Если хочешь перевод — напиши текст без /")
         return
