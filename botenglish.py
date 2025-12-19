@@ -491,6 +491,54 @@ async def cancel(m: Message, state: FSMContext):
 
 
 # ===================== QUIZ =====================
+def parse_quiz_source(text: str) -> tuple[str, list[int], list[int]]:
+    """
+    Возвращает:
+      label: текст для шапки ("Units: 1,3" или "IDs: 140-160")
+      pool_ids: список ID слов для теста
+      units: список unit-ов (если выбраны), иначе []
+    """
+    t = (text or "").strip().lower()
+
+    # --- range formats ---
+    # "140-160"
+    m = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", t)
+    if not m:
+        # "140 160"
+        m = re.match(r"^\s*(\d+)\s+(\d+)\s*$", t)
+    if not m:
+        # "от 140 до 160"
+        m = re.search(r"от\s*(\d+)\s*до\s*(\d+)", t)
+
+    if m:
+        a = int(m.group(1))
+        b = int(m.group(2))
+        if a > b:
+            a, b = b, a
+
+        pool_ids = []
+        for it in VOCAB:
+            _id = int(it["ID"])
+            if a <= _id <= b and _clean_text(it.get("WORD")) and _clean_text(it.get("DEFINITION")):
+                pool_ids.append(_id)
+
+        label = f"IDs: {a}-{b}"
+        return label, pool_ids, []
+
+    # --- units formats (старое поведение) ---
+    units = parse_units(text)
+    units_set = set(units)
+
+    pool_ids = []
+    for it in VOCAB:
+        if it.get("UNIT NO") in units_set:
+            if _clean_text(it.get("WORD")) and _clean_text(it.get("DEFINITION")):
+                pool_ids.append(int(it["ID"]))
+
+    label = f"Units: {', '.join(map(str, units))}" if units else "Units: (none)"
+    return label, pool_ids, units
+
+
 def parse_units(text: str) -> list[int]:
     """
     Поддержка:
@@ -571,15 +619,16 @@ async def send_next_question(m: Message, state: FSMContext):
     score: int = st.get("quiz_score", 0)
     total: int = st.get("quiz_total", 0)
     mode: str = st.get("quiz_mode", "wd")  # "wd" или "dw"
-    units: list[int] = st.get("quiz_units", [])
+    label: str = st.get("quiz_label", "Test")
     pool_ids: list[int] = st.get("quiz_pool_ids", [])
     wrong_ids: list[int] = st.get("quiz_wrong", [])
 
-    # если тест закончился
+   # если тест закончился
     if pos >= total:
+        label = st.get("quiz_label", f"Units: {', '.join(map(str, units))}" if units else "Test")
         summary = (
             f"🏁 Тест закончен!\n"
-            f"Units: {', '.join(map(str, units))}\n"
+            f"{label}\n"
             f"✅ {score}/{total}"
         )
 
@@ -631,8 +680,8 @@ async def send_next_question(m: Message, state: FSMContext):
 
     qn = pos + 1
     header = (
-        f"🧪 Тест ({qn}/{total}) | Score: {score}/{pos}\n"
-        f"Units: {', '.join(map(str, units))}\n"
+    f"🧪 Тест ({qn}/{total}) | Score: {score}/{pos}\n"
+    f"{label}\n"
     )
 
     if mode == "wd":
@@ -667,17 +716,22 @@ async def quiz_start(m: Message, state: FSMContext):
 
 @router.message(QuizState.waiting_units)
 async def quiz_set_units(m: Message, state: FSMContext):
-    units = parse_units(m.text or "")
-    if not units:
-        await m.answer("Не понял unit-ы. Пример: 1 3  или  1-3")
-        return
+    label, pool_ids, units = parse_quiz_source(m.text or "")
 
-    pool_ids = build_pool(units)
     if len(pool_ids) < 3:
-        await m.answer("Слишком мало слов с definition в этих unit-ах (нужно минимум 3). Выбери другие.")
+        await m.answer(
+            "Слишком мало слов с definition для теста (нужно минимум 3).\n"
+            "Примеры:\n"
+            "• unit-ы: 1 3  |  1-3,5\n"
+            "• диапазон: 140-160  |  140 160  |  от 140 до 160"
+        )
         return
 
-    await state.update_data(quiz_units=units, quiz_pool_ids=pool_ids)
+    await state.update_data(
+        quiz_label=label,
+        quiz_units=units,
+        quiz_pool_ids=pool_ids,
+    )
     await state.set_state(QuizState.waiting_mode)
     await m.answer("Выбери режим теста:", reply_markup=build_mode_kb())
 
