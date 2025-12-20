@@ -4,7 +4,7 @@ name: Deploy to Server
 on:
   push:
     branches:
-      - master  # or your deployment branch
+      - main  # or your deployment branch
 
 jobs:
   deploy:
