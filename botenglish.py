@@ -710,7 +710,7 @@ async def quiz_start(m: Message, state: FSMContext):
     await state.set_state(QuizState.waiting_units)
     await m.answer(
         "Напиши unit-ы для теста:\n"
-        "Примеры: 4  |  1 3  |  1,3  |  1-3  |  1-3,5"
+        "Примеры: 6  |  1 3  |  1,3  |  1-3  |  1-3,5"
     )
 
 
