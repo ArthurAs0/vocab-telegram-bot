@@ -199,6 +199,8 @@ async def translate_to_armenian(text: str) -> str:
     TR_CACHE[cache_key] = translated or "Не получилось перевести 😕"
     return TR_CACHE[cache_key]
 
+def is_cancel_text(text: str | None) -> bool:
+    return (text or "").strip() in {"❌ Отмена", "Отмена"}
 
 # ===================== FSM =====================
 class TranslateState(StatesGroup):
@@ -296,7 +298,7 @@ async def start(m: Message):
         "Я читаю твой Excel со словами 📘 + умею переводить на армянский 🇦🇲 + тест 🧪\n\n"
         "Команды:\n"
         "/range 100 141 — слова по номерам\n"
-        "/unit 4 — слова из Unit\n"
+        "/unit 5 — слова из Unit\n"
         "/find boring — поиск по слову\n"
         "/units — список unit-ов\n"
         "/tr text — перевод на армянский\n\n"
@@ -449,6 +451,11 @@ async def tr_cmd(m: Message):
 
 @router.message(TranslateState.waiting_text)
 async def tr_state_handler(m: Message, state: FSMContext):
+    if is_cancel_text(m.text):
+        await state.clear()
+        await m.answer("Отменил ✅", reply_markup=build_kb())
+        return
+    
     if tr_rate_limited(m.from_user.id):
         await m.answer("⏳ Слишком часто. Подожди 2 секунды 🙂")
         return
