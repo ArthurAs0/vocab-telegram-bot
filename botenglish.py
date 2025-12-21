@@ -319,7 +319,7 @@ async def units_cmd(m: Message):
         await m.answer("Units не найдены.")
         return
 
-    text = "Units:\n" + "\n".join([f"Unit {u}: {counts[u]} words" for u in sorted(counts)])
+    text = "Units Enter /unit 4 :\n" + "\n".join([f"Unit {u}: {counts[u]} words" for u in sorted(counts)])
     await m.answer(text)
 
 
