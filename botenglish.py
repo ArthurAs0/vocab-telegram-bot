@@ -3,19 +3,15 @@ import re
 import random
 import asyncio
 import aiohttp
-
 import time
 import math
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram import F
+from pathlib import Path
 
 from dotenv import load_dotenv
 from openpyxl import load_workbook
-from aiohttp import web
-from pathlib import Path
 
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
@@ -53,23 +49,6 @@ SHEET_NAME = "THINK L2 DUTCH"   # если будет ошибка листа �
 router = Router()
 VOCAB: list[dict] = []
 VOCAB_BY_ID: dict[int, dict] = {}
-
-
-
-
-async def start_health_server():
-    app = web.Application()
-
-    async def health(_request):
-        return web.Response(text="ok")
-
-    app.router.add_get("/health", health)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", "8000"))
-    site = web.TCPSite(runner, "0.0.0.0", port)  # важно 0.0.0.0 :contentReference[oaicite:4]{index=4}
-    await site.start()
 
 
 def tr_rate_limited(user_id: int) -> bool:
@@ -483,11 +462,12 @@ async def tr_state_handler(m: Message, state: FSMContext):
         await m.answer(f"Не смог перевести 😕 ({type(e).__name__})")
 
 
-@router.message(F.text == "❌ Отмена")
-@router.message(Command("cancel"))
-async def cancel(m: Message, state: FSMContext):
+@router.message(StateFilter("*"), F.text.in_({"❌ Отмена", "Отмена"}))
+@router.message(StateFilter("*"), Command("cancel"))
+async def cancel_any(m: Message, state: FSMContext):
     await state.clear()
-    await m.answer("Отменил ✅")
+    await m.answer("Отменил ✅", reply_markup=build_kb())
+
 
 
 # ===================== QUIZ =====================
@@ -854,7 +834,6 @@ async def main():
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
-    await start_health_server()
     await dp.start_polling(bot)
 
 
